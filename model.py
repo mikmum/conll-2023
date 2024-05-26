@@ -6,6 +6,21 @@ import torch
 import torch.nn as nn
 from TorchCRF import CRF
 
+#Jedyny sposób jaki znalazlem by output w ogóle był sparsowany. Predykcje z modelu miały błędne sekwencje
+#(typu 0 I-*) i ewaluacja się nawet nie wykonywała.
+def correct_iob_labels(predictions):
+    corrected = []
+    for pred in predictions:
+        corrected_sentence = []
+        prev_label = 'O'
+        for label in pred:
+            if label.startswith('I-') and (prev_label == 'O' or prev_label[2:] != label[2:]):
+                corrected_sentence.append('B-' + label[2:])
+            else:
+                corrected_sentence.append(label)
+            prev_label = corrected_sentence[-1]
+        corrected.append(corrected_sentence)
+    return corrected
 
 # Załadowanie danych treningowych
 def load_train_data(file_path):
@@ -25,6 +40,7 @@ def load_data(file_path):
 train_sentences, train_labels = load_train_data("train/train.tsv")
 dev_sentences = load_data("dev-0/in.tsv")
 test_sentences = load_data("test-A/in.tsv")
+dev_labels = load_data("dev-0/expected.tsv")
 
 
 # Budowanie słownika
@@ -69,6 +85,7 @@ train_tokens_ids = data_process(train_sentences)
 dev_tokens_ids = data_process(dev_sentences)
 test_tokens_ids = data_process(test_sentences)
 train_labels_ids = labels_process(train_labels, label_mapping)
+dev_labels_ids = labels_process(dev_labels, label_mapping)
 
 
 # Implementacja modelu LSTM
@@ -133,7 +150,7 @@ def predict_and_save(model, input_tokens_ids, output_file):
         predictions.append(predicted_labels[1:-1])  # Pomijamy <bos> i <eos>
 
     with open(output_file, 'w') as f:
-        for sentence in predictions:
+        for sentence in correct_iob_labels(predictions):
             f.write(" ".join(sentence) + "\n")
 
 
