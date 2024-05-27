@@ -4,7 +4,6 @@ from tqdm import tqdm
 import pandas as pd
 import torch
 import torch.nn as nn
-from TorchCRF import CRF
 
 #Jedyny sposób jaki znalazlem by output w ogóle był sparsowany. Predykcje z modelu miały błędne sekwencje
 #(typu 0 I-*) i ewaluacja się nawet nie wykonywała.
@@ -22,26 +21,24 @@ def correct_iob_labels(predictions):
         corrected.append(corrected_sentence)
     return corrected
 
-# Załadowanie danych treningowych
-def load_train_data(file_path):
-    data = pd.read_csv(file_path, sep='\t', header=None)
-    labels = data[0].str.split().tolist()
-    sentences = data[1].str.split().tolist()
-    return sentences, labels
+
+# Załadowanie danych
+def load_data():
+    train_dataset = pd.read_csv("train/train.tsv", sep="\t", names=["Label", "Doc"])
+    dev_0_dataset = pd.read_csv("dev-0/in.tsv", sep="\t", names=["Doc"])
+    test_A_dataset = pd.read_csv("test-A/in.tsv", sep="\t", names=["Doc"])
+    return train_dataset, dev_0_dataset, test_A_dataset
 
 
-# Załadowanie danych walidacyjnych i testowych
-def load_data(file_path):
-    data = pd.read_csv(file_path, sep='\t', header=None)
-    sentences = data[0].str.split().tolist()
-    return sentences
+train_dataset, dev_0_dataset, test_A_dataset = load_data()
 
+train_dataset = pd.DataFrame({"Doc": train_dataset["Doc"], "Label": train_dataset["Label"]})
 
-train_sentences, train_labels = load_train_data("train/train.tsv")
-dev_sentences = load_data("dev-0/in.tsv")
-test_sentences = load_data("test-A/in.tsv")
-dev_labels = load_data("dev-0/expected.tsv")
-
+# Tokenizacja danych
+train_dataset["tokenized_docs"] = train_dataset["Doc"].apply(lambda x: x.split())
+train_dataset["tokenized_labels"] = train_dataset["Label"].apply(lambda x: x.split())
+dev_0_dataset["tokenized_docs"] = dev_0_dataset["Doc"].apply(lambda x: x.split())
+test_A_dataset["tokenized_docs"] = test_A_dataset["Doc"].apply(lambda x: x.split())
 
 # Budowanie słownika
 def build_vocab(sentences):
@@ -51,7 +48,7 @@ def build_vocab(sentences):
     return vocab(counter, specials=["<unk>", "<pad>", "<bos>", "<eos>"])
 
 
-v = build_vocab(train_sentences)
+v = build_vocab(train_dataset["tokenized_docs"])
 v.set_default_index(v["<unk>"])
 
 
@@ -59,38 +56,38 @@ v.set_default_index(v["<unk>"])
 def data_process(sentences):
     return [
         torch.tensor(
-            [v[token] for token in sentence],
+            [v["<bos>"]] + [v[token] for token in sentence] + [v["<eos>"]],
             dtype=torch.long,
         )
         for sentence in sentences
     ]
 
 
+train_tokens_ids = data_process(train_dataset["tokenized_docs"])
+dev_tokens_ids = data_process(dev_0_dataset["tokenized_docs"])
+test_tokens_ids = data_process(test_A_dataset["tokenized_docs"])
+
+# Mapa etykiet
+labels = ["O", "B-PER", "I-PER", "B-ORG", "I-ORG", "B-LOC", "I-LOC", "B-MISC", "I-MISC"]
+label_mapping = {label: idx for idx, label in enumerate(labels)}
+
+
 def labels_process(labels, label_mapping):
     return [
         torch.tensor(
-            [label_mapping[label] for label in sentence],
+            [0] + [label_mapping[label] for label in sentence] + [0],
             dtype=torch.long,
         )
         for sentence in labels
     ]
 
 
-# Automatyczne generowanie mapy etykiet
-all_labels = [label for sentence_labels in train_labels for label in sentence_labels]
-unique_labels = list(set(all_labels))
-label_mapping = {label: i for i, label in enumerate(unique_labels)}
-
-train_tokens_ids = data_process(train_sentences)
-dev_tokens_ids = data_process(dev_sentences)
-test_tokens_ids = data_process(test_sentences)
-train_labels_ids = labels_process(train_labels, label_mapping)
-dev_labels_ids = labels_process(dev_labels, label_mapping)
+train_labels_ids = labels_process(train_dataset["tokenized_labels"], label_mapping)
 
 
 # Implementacja modelu LSTM
 class LSTM(torch.nn.Module):
-    def __init__(self, vocab_size, embedding_dim, hidden_dim, output_dim, crf_weight=10):
+    def __init__(self, vocab_size, embedding_dim, hidden_dim, output_dim):
         super(LSTM, self).__init__()
         self.embedding_dim = embedding_dim
         self.hidden_dim = hidden_dim
@@ -115,7 +112,7 @@ criterion = torch.nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters())
 
 # Trening modelu
-NUM_EPOCHS = 5
+NUM_EPOCHS = 25
 for epoch in range(NUM_EPOCHS):
     model.train()
     for tokens, labels in tqdm(zip(train_tokens_ids, train_labels_ids), total=len(train_tokens_ids)):
